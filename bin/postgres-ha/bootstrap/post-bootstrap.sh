@@ -15,34 +15,47 @@
 
 export PGHOST="/tmp"
 
-source /opt/cpm/bin/common/common_lib.sh
+CRUNCHY_DIR=${CRUNCHY_DIR:-'/opt/crunchy'}
+source "${CRUNCHY_DIR}/bin/common_lib.sh"
 enable_debugging
 
 echo_info "postgres-ha post-bootstrap starting"
 
-# Run either a custom or the defaul setup.sql file
-if [[ -f "/pgconf/setup.sql" ]]
+# When using the 'pgbackrest_init' bootstrap method, make sure backrest is stopped before writing
+# to the DB.  This is because when using this bootstrap method, the current instance will still
+# be connected to the pgBackRest repository for another cluster (i.e. the cluster being
+# bootstrapped from), and we want to ensure there is no ability to push WAL to that repo.  Please
+# note that when using 'pgbackrest_init' archive_mode should also be disabled, and this simply 
+# serves as an extra precaution.
+if [[ "${PGHA_BOOTSTRAP_METHOD}" == "pgbackrest_init" ]]
 then
-    echo_info "Using custom setup.sql"
-    cp "/pgconf/setup.sql" "/tmp"
+    pgbackrest stop
+    err_check "$?" "post bootstrap" "Could not stop pgBackRest, ${setup_file} will not be run"
+fi
+
+if [[ "${PGHA_BOOTSTRAP_METHOD}" == "initdb" ]]
+then
+    # Run either a custom or the defaul setup.sql file
+    if [[ -f "/pgconf/setup.sql" ]]
+    then
+        echo_info "Using custom setup.sql"
+        setup_file="/pgconf/setup.sql"
+    else
+        echo_info "Using default setup.sql"
+        setup_file="${CRUNCHY_DIR}/bin/postgres-ha/sql/setup.sql"
+    fi
 else
-    echo_info "Using default setup.sql"
-    cp "/opt/cpm/bin/sql/setup.sql" "/tmp"
+    if [[ -f "/pgconf/post-existing-init.sql" ]]
+    then
+        echo_info "Using custom post-existing-init.sql"
+        setup_file="/pgconf/post-existing-init.sql"
+    else
+        echo_info "Using default post-existing-init.sql"
+        setup_file="${CRUNCHY_DIR}/bin/postgres-ha/sql/post-existing-init.sql"
+    fi
 fi
 
-echo_info "Running setup.sql file"
-envsubst < /tmp/setup.sql | psql -f -
-
-# If there are any tablespaces, create them as a convenience to the user, both
-# the directories and the PostgreSQL objects
-source /opt/cpm/bin/common/pgha-tablespaces.sh
-tablespaces_create_postgresql_objects "${PGHA_USER}"
-
-# Run audit.sql file if exists
-if [[ -f "/pgconf/audit.sql" ]]
-then
-    echo_info "Running custom audit.sql file"
-    psql < "/pgconf/audit.sql"
-fi
+echo_info "Running ${setup_file} file"
+envsubst < "${setup_file}" | psql -f -
 
 echo_info "postgres-ha post-bootstrap complete"

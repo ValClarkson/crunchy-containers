@@ -16,7 +16,8 @@
 export PGHOST="/tmp"
 export PGPORT="$PGHA_PG_PORT"
 
-source /opt/cpm/bin/common/common_lib.sh
+CRUNCHY_DIR=${CRUNCHY_DIR:-'/opt/crunchy'}
+source "${CRUNCHY_DIR}/bin/common_lib.sh"
 enable_debugging
 
 trap_sigterm() {
@@ -56,41 +57,92 @@ initialization_monitor() {
         # Enable pgbackrest
         if [[ "${PGHA_PGBACKREST}" == "true" ]]
         then
-            source "/opt/cpm/bin/pgbackrest/pgbackrest-post-bootstrap.sh"
+            source "${CRUNCHY_DIR}/bin/postgres-ha/pgbackrest/pgbackrest-post-bootstrap.sh"
         fi
 
         if [[ "${PGHA_INIT}" == "true" ]]
         then
+
+            if [[ "${PGHA_STANDBY}" != "true" ]]
+            then
+                primary_endpoint="master"
+            else
+                primary_endpoint="standby_leader"
+            fi
+
             echo_info "PGHA_INIT is '${PGHA_INIT}', waiting to initialize as primary"
             # Wait until the master endpoint returns 200 indicating the local node is running as the current primary
-            status_code=$(curl -o /dev/stderr -w "%{http_code}" "127.0.0.1:${PGHA_PATRONI_PORT}/master" 2> /dev/null)
+            status_code=$(curl -o /dev/stderr -w "%{http_code}" "127.0.0.1:${PGHA_PATRONI_PORT}/${primary_endpoint}" 2> /dev/null)
             until [[ "${status_code}" == "200" ]]
             do
                 sleep 1
                 echo "Not yet running as primary, retrying" >> "/tmp/patroni_initialize_check.log"
-                status_code=$(curl -o /dev/stderr -w "%{http_code}" "127.0.0.1:${PGHA_PATRONI_PORT}/master" 2> /dev/null)
+                status_code=$(curl -o /dev/stderr -w "%{http_code}" "127.0.0.1:${PGHA_PATRONI_PORT}/${primary_endpoint}" 2> /dev/null)
             done
+        fi
 
-            echo_info "PGHA_INIT is '${PGHA_INIT}', executing post-init process to fully initialize the cluster"
-            if [[ -f "/crunchyadm/pgha_convert_standalone" ]]
-            then
-                echo_info "Executing Patroni restart to restart database and update configuration"
-                curl -X POST --silent "127.0.0.1:${PGHA_PATRONI_PORT}/restart"
-                test_server "postgres" "${PGHOST}" "${PGPORT}" "postgres"
-                echo_info "The database has been restarted"
-            else
-                echo "Pending restart not detected, will not restart" >> "/tmp/patroni_initialize_check.log"
-            fi
+        # Patroni's bootstrap succeeded. Clear the initialization marker from
+        # the volume.
+        if [[ "${PGHA_INIT}" == "true" && -f "${PATRONI_POSTGRESQL_DATA_DIR}.initializing" ]]
+        then
+            rm "${PATRONI_POSTGRESQL_DATA_DIR}.initializing"
+        fi
 
-            # Apply enhancement modules
-            echo_info "Applying enahncement modules"
-            for module in /opt/cpm/bin/modules/*.sh
+        # The following logic only applies to bootstrapping and initializing clusters that are
+        # not standby clusters.  Specifically, this logic expects the database to exit recovery
+        # and become writable.
+        if [[ "${PGHA_INIT}" == "true" && "${PGHA_STANDBY}" != "true" ]]
+        then
+            # Ensure the cluster is no longer in recovery
+            until [[ $(psql -At -c "SELECT pg_catalog.pg_is_in_recovery()") == "f" ]]
             do
-                echo_info "Applying module ${module}"
-                source "${module}"
+                echo_info "Detected recovery during cluster init, waiting one second..."
+                sleep 1
             done
-        else
-            echo_info "PGHA_INIT is '${PGHA_INIT}', skipping post-init process "
+
+            # if the bootstrap method is not "initdb", we assume we're running an init job and now
+            # proceed with shutting down Patroni and the database
+            if [[ "${PGHA_BOOTSTRAP_METHOD}" != "pgbackrest_init" ]]
+            then
+                # Apply enhancement modules
+                echo_info "Applying enahncement modules"
+                for module in "${CRUNCHY_DIR}"/bin/modules/*.sh
+                do
+                    echo_info "Applying module ${module}"
+                    source "${module}"
+                done
+
+                # If there are any tablespaces, create them as a convenience to the user, both
+                # the directories and the PostgreSQL objects
+                source "${CRUNCHY_DIR}/bin/postgres-ha/common/pgha-tablespaces.sh"
+                tablespaces_create_postgresql_objects "${PGHA_USER}"
+
+                # Run audit.sql file if exists
+                if [[ -f "/pgconf/audit.sql" ]]
+                then
+                    echo_info "Running custom audit.sql file"
+                    psql < "/pgconf/audit.sql"
+                fi
+            else
+                echo_info "Init job completed, shutting down the cluster and removing from the DCS"
+
+                # pause Patroni, stop the database, and then remove the cluster from the DCS
+                patronictl pause
+                patronictl reload "${PATRONI_SCOPE}" --force &> /dev/null
+                pg_ctl stop -m fast -D "${PATRONI_POSTGRESQL_DATA_DIR}"
+                printf '%s\nYes I am aware\n%s\n' "${PATRONI_SCOPE}" "${PATRONI_NAME}" | patronictl remove "${PATRONI_SCOPE}" &> /dev/null
+                err_check "$?" "Remove from DCS" "Unable to remove cluster from the DCS following init job"
+                echo_info "Successfully removed cluster from the DCS"
+
+                # now kill patroni and sshd
+                killall patroni
+                killall sshd
+
+                while killall -0 patroni; do
+                    echo_info "Waiting for Patroni to terminate following init job..."
+                    sleep 1
+                done
+            fi
         fi
 
         touch "/crunchyadm/pgha_initialized"  # write file to indicate the cluster is fully initialized
@@ -104,7 +156,7 @@ primary_initialization_monitor() {
     echo_info "Primary host specified, checking if Primary is ready before initializing replica"
     env_check_err "PGHA_PRIMARY_HOST"
     while [[ $(curl --silent "${PGHA_PRIMARY_HOST}:${PGHA_PATRONI_PORT}/master" --stderr - \
-        | /opt/cpm/bin/yq r - state 2> /dev/null) != "running" ]]
+        | "${CRUNCHY_DIR}/bin/yq" r - state 2> /dev/null) != "running" ]]
     do
         echo_info "Primary is not ready, retrying"
         sleep 1
@@ -126,117 +178,44 @@ remove_patroni_pause_key()  {
     fi
 }
 
-# Checks to see if a PostgreSQL server (v12 or above) is configured for a PITR recovery. This is
-# done by checking whether or not a 'recovery.signal' file is present, along with whether or not
-# 'recovery_target' settings are present in the 'postgresql.auto.conf' file (as configured by
-# pgBackRest during a restore).
-is_pg_in_pitr_recovery() {
-    [[ -f "${PATRONI_POSTGRESQL_DATA_DIR}/recovery.signal" ]] && has_recovery_target "postgresql.auto.conf"
-}
+# If there was a prior attempt to initialize, repeatedly log some advice.
+# Otherwise, mark the volume to indicate initialization will soon take place.
+# This is outside of PATRONI_POSTGRESQL_DATA_DIR so that Patroni does not move
+# it when bootstrap fails.
+if [[ "${PGHA_INIT}" == "true" ]]
+then
+    if [[ -f "${PATRONI_POSTGRESQL_DATA_DIR}.initializing" ]]
+    then
+        while
+            echo_warn "Detected an earlier failed attempt to initialize"
+            echo_info "Correct the issue, remove '${PATRONI_POSTGRESQL_DATA_DIR}.initializing', and try again"
+            echo_info "Your data might be in: $(echo ${PATRONI_POSTGRESQL_DATA_DIR}_*)"
+        do
+            sleep 10 & wait $!
+        done
+    fi
 
-# Checks to see if a PostgreSQL server (v11 or less) is configured for a PITR recovery.  This is
-# done by checking whether or not a 'recovery.conf' file is present, along with whether or not
-# 'recovery_target' settings are present in the 'recovery.conf' file (as configured by pgBackRest
-# during a restore).
-is_pg_in_pitr_recovery_legacy() {
-    [[ -f "${PATRONI_POSTGRESQL_DATA_DIR}/recovery.conf" ]] && has_recovery_target "recovery.conf"
-}
-
-# Checks to see if any "recovery_target" settings are present in the PG config file provided,
-# such as a postgresql.conf file (PG 12 and greater) or a recovery.conf file (PG 11 and less)
-has_recovery_target() {
-    grep -E '^recovery_target' "${PATRONI_POSTGRESQL_DATA_DIR}/$1"
-}
+    date --iso-8601=ns --utc > "${PATRONI_POSTGRESQL_DATA_DIR}.initializing"
+fi
 
 # Configure users and groups
-source /opt/cpm/bin/common/uid_postgres_no_exec.sh
+source "${CRUNCHY_DIR}/bin/uid_postgres_no_exec.sh"
 
 # Perform cluster pre-initialization (set defaults, load secrets, peform validation, log config details, etc.)
-source /opt/cpm/bin/bootstrap/pre-bootstrap.sh
+source "${CRUNCHY_DIR}/bin/postgres-ha/bootstrap/pre-bootstrap.sh"
 
 # Enable pgbackrest
 if [[ "${PGHA_PGBACKREST}" == "true" ]]
 then
-    source /opt/cpm/bin/pgbackrest/pgbackrest-pre-bootstrap.sh
+    source "${CRUNCHY_DIR}/bin/postgres-ha/pgbackrest/pgbackrest-pre-bootstrap.sh"
 fi
 
 # Enable SSHD if needed for a pgBackRest dedicated repository prior to bootstrapping
-source /opt/cpm/bin/bootstrap/sshd.sh
+source "${CRUNCHY_DIR}/bin/postgres-ha/bootstrap/sshd.sh"
 
 if [[ -v PGHA_PRIMARY_HOST ]]
 then
     primary_initialization_monitor
-fi
-
-# Determine if the database is configured for a PITR.  If so, the database will be started
-# manually to ensure the propery recovery target is achieved.  Otherwise, if not perorming
-# a PITR, Patroni will handle any recovery and start the database.
-if is_pg_in_pitr_recovery || is_pg_in_pitr_recovery_legacy
-then
-    echo_info "Detected PITR recovery, will start database manually prior to starting Patroni"
-    manual_start=true
-
-    echo_info "Removing 'hba_file' and 'ident_file' settings from postgres.conf to ensure a clean start"
-    sed -i -E '/^hba_file|^ident_file/d' "${PATRONI_POSTGRESQL_DATA_DIR}/postgresql.conf"
-fi
-
-# Detect if converting a non-Patroni standalone database to a Patroni cluster, which will result
-# in a manual start of the database along with the execution of the 'post-existing-init.sql' script.  
-# This is done by detecting whether or not there is an existing PGDATA directory which does not 
-# contain a patroni.dynamic.json.  If this file is present, an existing Patroni cluster is assumed
-# and Patroni will handle the recovery.
-if [[ "${PGHA_INIT}" == "true" && -f "${PATRONI_POSTGRESQL_DATA_DIR}/PG_VERSION" &&
-    ! -f "${PATRONI_POSTGRESQL_DATA_DIR}/patroni.dynamic.json" ]]
-then
-    echo_info "Non-Patroni database detected during init, will start manually prior to starting Patroni"
-    manual_start=true
-    convert_standalone=true
-fi
-
-# Start the database manually if needed (e.g. if performing a PITR or converting a non-Patroni
-# standalone database).
-if [[ "${manual_start}" == "true" ]]
-then
-    while :
-    do
-        if ! pgrep --exact postgres &> /dev/null
-        then
-            # Start PostgreSQL in the background any time it is not running. It will exit if there
-            # is an error during recovery, so start it again to retry. Allow only local connections
-            # for now. PostgreSQL is restarted later, through Patroni, without these settings.
-            pg_ctl start --silent -D "${PATRONI_POSTGRESQL_DATA_DIR}" \
-                -o "-c listen_addresses='' -c unix_socket_directories='${PGHOST}'"
-        fi
-
-        # Check for ongoing recovery once connected. Since PostgreSQL 10, a hot standby allows
-        # connections during recovery:
-        # https://postgr.es/m/CABUevEyFk2cbpqqNDVLrgbHPEGLa%2BBV7nu4HAETBL8rK9Df_LA%40mail.gmail.com
-        if pg_isready --quiet --username="postgres" &&
-            [ "$(psql --quiet --username="postgres" -Atc 'SELECT pg_is_in_recovery()')" = 'f' ]
-        then
-            break
-        else
-            echo_info "Database has not reached a consistent state, sleeping..."
-            sleep 5
-        fi
-    done
-    echo_info "Reached a consistent state"
-fi
-
-# Run the post-existing-init.sql file if converting a non-Patroni standalone database to a Patroni
-# cluster.
-if [[ "${convert_standalone}" == "true" ]]
-then
-    touch "/crunchyadm/pgha_convert_standalone"
-    echo_info "Manually creating Patroni accounts and proceeding with Patroni initialization"
-
-    if [[ -f "/pgconf/post-existing-init.sql" ]]
-    then
-        post_existing_init_file="/pgconf/post-existing-init.sql"
-    else
-        post_existing_init_file="/opt/cpm/bin/sql/post-existing-init.sql"
-    fi
-    envsubst < ${post_existing_init_file} | psql -f -
 fi
 
 # Moinitor for the intialization of the cluster
@@ -248,7 +227,10 @@ remove_patroni_pause_key
 # Bootstrap the cluster
 bootstrap_cmd="$@ /tmp/postgres-ha-bootstrap.yaml"
 echo_info "Initializing cluster bootstrap with command: '${bootstrap_cmd}'"
-if [[ "$$" == 1 ]]
+# If PID 1 and bootstrapping from scratch via initdb, then run patroni as PID 1.  Otherwise, if
+# running as an init job (e.g. to perform a pgbackrest restore) do not run as a PID 1 to ensure
+# the container exits with a non-zero exit code in the event the pgbackrest restore fails
+if [[ "$$" == 1 && "${PGHA_BOOTSTRAP_METHOD}" != "pgbackrest_init" ]]
 then
     echo_info "Running Patroni as PID 1"
     exec ${bootstrap_cmd}

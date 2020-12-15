@@ -1,8 +1,6 @@
 ---
 title: "crunchy-pgadmin4"
-date: 2018-05-24T12:05:42-07:00
 draft: false
-weight: 5
 ---
 
 The crunchy-pgadmin4 container executes the [pgAdmin4](https://www.pgadmin.org/) web application.
@@ -28,10 +26,10 @@ The following features are supported by the crunchy-pgadmin4 container:
 
 The crunchy-pgadmin4 Docker image contains the following packages (versions vary depending on PostgreSQL version):
 
-* PostgreSQL (12.3, 11.8, 10.13, 9.6.18 and 9.5.22)
+* PostgreSQL (13.1, 12.5, 11.10, 10.15, 9.6.20 and 9.5.24)
 * [pgAdmin4](https://www.pgadmin.org/)
-* CentOS7 - publicly available
-* UBI7 - customers only
+* CentOS 7, CentOS 8 - publicly available
+* UBI 7, UBI 8 - customers only
 
 ## Environment Variables
 

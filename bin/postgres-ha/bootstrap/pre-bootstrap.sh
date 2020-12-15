@@ -15,7 +15,8 @@
 
 export PGHOST="/tmp"
 
-source /opt/cpm/bin/common/common_lib.sh
+CRUNCHY_DIR=${CRUNCHY_DIR:-'/opt/crunchy'}
+source "${CRUNCHY_DIR}/bin/common_lib.sh"
 
 echo_info "postgres-ha pre-bootstrap starting..."
 
@@ -225,6 +226,21 @@ set_pg_user_credentials() {
     fi
 }
 
+# Sets the bootstrap method for the cluster.  Can either be 'initdb' to initialize a new cluster
+# from scratch, 'pgbackrest_init' to initialize using a pgBackRest restore, or 'existing_init' to
+# initialize from an existing PGDATA directory.
+set_bootstrap_method() {
+    if [[ ! -v PGHA_BOOTSTRAP_METHOD ]]
+    then
+        if [[ -d "${PATRONI_POSTGRESQL_DATA_DIR}" && -n "$(ls -A "${PATRONI_POSTGRESQL_DATA_DIR}")" ]]
+        then
+            export PGHA_BOOTSTRAP_METHOD="existing_init"
+        else
+            export PGHA_BOOTSTRAP_METHOD="initdb"
+        fi
+    fi
+}
+
 # Validate environment variables
 validate_env() {
     if [[ "${PATRONI_POSTGRESQL_DATA_DIR}" == "/pgdata" || "${PATRONI_POSTGRESQL_DATA_DIR}" == "/pgdata/"
@@ -250,12 +266,14 @@ build_bootstrap_config_file() {
     echo "---" >> "${bootstrap_file}"
 
     pghba_file="/tmp/postgres-ha-pghba.yaml"
-    cat "/opt/cpm/conf/postgres-ha-pghba-bootstrap.yaml" >> "${pghba_file}"
+    cat "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-pghba-bootstrap.yaml" >> "${pghba_file}"
 
     if [[ "${PGHA_BASE_BOOTSTRAP_CONFIG}" == "true" ]]
     then
         echo_info "Applying base bootstrap config to postgres-ha configuration"
-        /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "/opt/cpm/conf/postgres-ha-bootstrap.yaml"
+        "${CRUNCHY_DIR}/bin/yq" m -i -x "${bootstrap_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-bootstrap.yaml"
+        # set the configured bootstrap method (e.g. initdb or pgbackrest)
+        sed -i "s/PGHA_BOOTSTRAP_METHOD/$PGHA_BOOTSTRAP_METHOD/g" "${bootstrap_file}"
     else
         echo_info "Base bootstrap config for postgres-ha configuration disabled"
     fi
@@ -263,7 +281,7 @@ build_bootstrap_config_file() {
     if [[ "${PGHA_BASE_PG_CONFIG}" == "true" ]]
     then
         echo_info "Applying base postgres config to postgres-ha configuration"
-        /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "/opt/cpm/conf/postgres-ha-pgconf.yaml"
+        "${CRUNCHY_DIR}/bin/yq" m -i -x "${bootstrap_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-pgconf.yaml"
     else
         echo_info "Base PG config for postgres-ha configuration disabled"
     fi
@@ -271,10 +289,10 @@ build_bootstrap_config_file() {
     if [[ "${PGHA_PGBACKREST}" == "true" ]]
     then
         echo_info "Applying pgbackrest config to postgres-ha configuration"
-        /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "/opt/cpm/conf/postgres-ha-pgbackrest.yaml"
+        "${CRUNCHY_DIR}/bin/yq" m -i -x "${bootstrap_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-pgbackrest.yaml"
         if [[ "${PGHA_PGBACKREST_LOCAL_S3_STORAGE}" == "true" ]]
         then
-            /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "/opt/cpm/conf/postgres-ha-pgbackrest-local-s3.yaml"
+            ${CRUNCHY_DIR}/bin/yq m -i -x "${bootstrap_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-pgbackrest-local-s3.yaml"
         fi
     else
         echo_info "pgBackRest config for postgres-ha configuration disabled"
@@ -282,18 +300,16 @@ build_bootstrap_config_file() {
 
     if [[ "${PGHA_INIT}" == "true" ]]
     then
-        echo_info "PGDATA directory is empty on node identifed as Primary"
-        echo_info "initdb configuration will be applied to intitilize a new database"
-        /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "/opt/cpm/conf/postgres-ha-initdb.yaml"
+        "${CRUNCHY_DIR}/bin/yq" m -i -x "${bootstrap_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-initdb.yaml"
 
         if [[ -n "${PGHA_WALDIR}" ]]
         then
             echo_info "Applying custom WAL dir to postgres-ha configuration"
             if printf '10\n'${PGVERSION} | sort -VC
             then
-                /opt/cpm/bin/yq w -i "${bootstrap_file}" 'bootstrap.initdb[+].waldir' "${PGHA_WALDIR}"
+                "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" 'bootstrap.initdb[+].waldir' "${PGHA_WALDIR}"
             else
-                /opt/cpm/bin/yq w -i "${bootstrap_file}" 'bootstrap.initdb[+].xlogdir' "${PGHA_WALDIR}"
+                "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" 'bootstrap.initdb[+].xlogdir' "${PGHA_WALDIR}"
             fi
         fi
     fi
@@ -301,13 +317,13 @@ build_bootstrap_config_file() {
     if [[ "${PGHA_STANDBY}" == "true" ]]
     then
         echo_info "Applying configuration to bootstrap a standby cluster"
-        /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "/opt/cpm/conf/postgres-ha-standby.yaml"
+        "${CRUNCHY_DIR}/bin/yq" m -i -x "${bootstrap_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-standby.yaml"
     fi
 
     if [[ "${PGHA_SYNC_REPLICATION}" == "true" ]]
     then
         echo_info "Applying synchronous replication settings to postgres-ha configuration"
-        /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "/opt/cpm/conf/postgres-ha-sync.yaml"
+        "${CRUNCHY_DIR}/bin/yq" m -i -x "${bootstrap_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-sync.yaml"
     fi
 
     # set up the pg_hba.conf file, based on if the user has enabled TLS, and if
@@ -318,33 +334,81 @@ build_bootstrap_config_file() {
     # postgresql.conf file
     if [[ "${PGHA_TLS_ENABLED}" == "true" ]]
     then
+      echo_info "Enabling TLS"
+      pghba_tls_file="${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-pghba-tls.yaml"
+
+      # if there is a TLS keypair for a replication user detected, we will need
+      # to copy this to a special mount in order to properly enable
+      # certificate-based authentication between replicas. This is due to
+      # PostgreSQL requiring a client's TLS key to have permissions no less strict
+      # than 0600. In this case, the client is the "postgres" user, and because
+      # Kubernetes Secrets are owned by the group, we need to create a copy of
+      # this key with the correct permissions
+      if [[ -f "/pgconf/tls/tls-replication.key" ]] && [[ -f "/pgconf/tls/tls-replication.crt" ]]
+      then
+        echo_info "Enabling certificate-based authentication for replication"
+
+        tls_replication_key_file="/pgconf/tls-replication/tls.key"
+        tls_replication_cert_file="/pgconf/tls-replication/tls.crt"
+        touch "${tls_replication_key_file}" "${tls_replication_cert_file}"
+        install -m 0600 /pgconf/tls/tls-replication.key "${tls_replication_key_file}"
+        install -m 0600 /pgconf/tls/tls-replication.crt "${tls_replication_cert_file}"
+
+        # update the bootstrap parameters to set the certificate-based
+        # authentication settings
+        "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" postgresql.authentication.replication.sslkey "${tls_replication_key_file}"
+        "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" postgresql.authentication.replication.sslcert "${tls_replication_cert_file}"
+        "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" postgresql.authentication.replication.sslrootcert "/pgconf/tls/ca.crt"
+        # as we have the CA available, we can make the TLS mode "verify-ca" by
+        # default
+        "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" postgresql.authentication.replication.sslmode "verify-ca"
+        # if a CRL file is provided, add this to the stanza as well
+        if [[ -f "/pgconf/tls/ca.crl" ]]
+        then
+          "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" postgresql.authentication.replication.sslcrl "/pgconf/tls/ca.crl"
+        fi
+
+        # use an updated pg_hba.conf file that enforces certificate based
+        # authentication
+        pghba_tls_file="${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-pghba-tls-auth.yaml"
+      fi
+
       echo_info "Applying TLS remote connection configuration to pg_hba.conf"
-      /opt/cpm/bin/yq m -i -a "${pghba_file}" "/opt/cpm/conf/postgres-ha-pghba-tls.yaml"
+      "${CRUNCHY_DIR}/bin/yq" m -i -a "${pghba_file}" "${pghba_tls_file}"
       echo_info "Enabling TLS in postgresql.conf"
-      /opt/cpm/bin/yq m -i -a "${bootstrap_file}" "/opt/cpm/conf/postgres-ha-pgconf-tls.yaml"
+      "${CRUNCHY_DIR}/bin/yq" m -i -a "${bootstrap_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-pgconf-tls.yaml"
 
       # The CRL file may not be present, so we only want to apply if if we have
       # the CRL file present
       if [[ -f "/pgconf/tls/ca.crl" ]]
       then
-        /opt/cpm/bin/yq w -i "${bootstrap_file}" bootstrap.dcs.postgresql.parameters.ssl_crl_file "/pgconf/tls/ca.crl"
+        "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" bootstrap.dcs.postgresql.parameters.ssl_crl_file "/pgconf/tls/ca.crl"
       fi
     fi
 
     if [[ "${PGHA_TLS_ONLY}" != "true" ]]
     then
       echo_info "Applying standard (non-TLS) remote connection configuration to pg_hba.conf"
-      /opt/cpm/bin/yq m -i -a "${pghba_file}" "/opt/cpm/conf/postgres-ha-pghba-notls.yaml"
+      "${CRUNCHY_DIR}/bin/yq" m -i -a "${pghba_file}" "${CRUNCHY_DIR}/conf/postgres-ha/postgres-ha-pghba-notls.yaml"
     fi
 
-    # merge the pg_hba.conf settings into the main boostrap file
+    # Disable archive_mode to prevent WAL from being pushed while potentially still connected
+    # to another pgBackRest repository while initializing (e.g. while performing a pgBackRest
+    # restore)
+    if [[ "${PGHA_BOOTSTRAP_METHOD}" == "pgbackrest_init" ]]
+    then
+      echo_info "Disabling archive mode for bootstrap method ${PGHA_BOOTSTRAP_METHOD}"
+      "${CRUNCHY_DIR}/bin/yq" w -i "${bootstrap_file}" postgresql.parameters.archive_mode "off"
+    fi
+
+    # merge the pg_hba.conf settings into the main bootstrap file
     sed -i "s/PATRONI_REPLICATION_USERNAME/$PATRONI_REPLICATION_USERNAME/g" "${pghba_file}"
-    /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "${pghba_file}"
+    "${CRUNCHY_DIR}/bin/yq" m -i -x "${bootstrap_file}" "${pghba_file}"
 
     if [[ -f "/pgconf/postgres-ha.yaml" ]]
     then
         echo_info "Applying custom postgres-ha configuration file"
-        /opt/cpm/bin/yq m -i -x "${bootstrap_file}" "/pgconf/postgres-ha.yaml"
+        "${CRUNCHY_DIR}/bin/yq" m -i -x "${bootstrap_file}" "/pgconf/postgres-ha.yaml"
     else
         echo_info "Custom postgres-ha configuration file not detected"
     fi
@@ -378,18 +442,37 @@ patroni_print_env=$(env | grep "^PATRONI_")  # capture Patroni env prior to sett
 # Set user credentials using the file system (e.g. Kube secrets) if provided
 set_pg_user_credentials
 
+# Sets the proper bootstrap method for the cluster ('initdb', 'pgbackrest_init' or 'existing_init')
+set_bootstrap_method
+
 # Perform any additional validation of env vars required
 validate_env
 
 # Create the Patroni bootstrap configuration file
 build_bootstrap_config_file
 
-# Create the pgdata directory if it doesn't exist
-mkdir -p "${PATRONI_POSTGRESQL_DATA_DIR}"
-chmod 0700 "${PATRONI_POSTGRESQL_DATA_DIR}"
+# If the PGHA_INIT flag is 'true' and data exists within the PGDATA directory, then proceed with
+# preparing the PGDATA directory for cluster bootstrap.  Specifically, assume we are using a
+# bootstrap method that is able to leverage an existing PGDATA directory (for instance, if starting
+# the database that already exists within the PGDATA directory, or if performing a pgBackRest delta
+# restore), and temporarily rename the existing PGDATA directory so that the true PGDATA directory
+# remains empty.  This will cause Patroni to bootstrap a new PostgreSQL cluster from scratch, while
+# still allowing the configured bootstrap method to leverage any existing data within the PGDATA
+# directory as needed.
+if [[ "${PGHA_INIT}" == "true" ]] && 
+    [[ -d "${PATRONI_POSTGRESQL_DATA_DIR}" && -n "$(ls -A "${PATRONI_POSTGRESQL_DATA_DIR}")" ]]
+then
+    echo_info "Detected cluster initialization using an existing PGDATA directory"
+    mv "${PATRONI_POSTGRESQL_DATA_DIR}" "${PATRONI_POSTGRESQL_DATA_DIR}_tmp"
+    err_check "$?" "Initialize Existing PGDATA" "Could not move the existing PGDATA directory as needed to initialize"
+else
+    # Create the pgdata directory if it doesn't exist
+    mkdir -p "${PATRONI_POSTGRESQL_DATA_DIR}"
+    chmod 0700 "${PATRONI_POSTGRESQL_DATA_DIR}"
+fi
 
 # create any tablespace directories, if they have not been created yet
-source /opt/cpm/bin/common/pgha-tablespaces.sh
+source "${CRUNCHY_DIR}/bin/postgres-ha/common/pgha-tablespaces.sh"
 tablespaces_create_directory
 
 echo_info "postgres-ha pre-bootstrap complete!  The following configuration will be utilized to initialize " \
@@ -402,6 +485,8 @@ echo "******************************"
 echo "Patroni env vars:"
 echo "******************************"
 echo "${patroni_print_env}"
+echo "******************************"
+echo "Patroni bootstrap method: ${PGHA_BOOTSTRAP_METHOD}"
 echo "******************************"
 echo "Patroni configuration file:"
 echo "******************************"

@@ -4,25 +4,23 @@ set -e -u
 
 REGISTRY=192.168.0.117:5000
 VERSION=${CCP_IMAGE_TAG?}
+GIS_VERSION=${CCP_POSTGIS_IMAGE_TAG?}
 IMAGES=(
-    crunchy-postgres
-    crunchy-backup
-    crunchy-pgpool
-    crunchy-pgbouncer
-    crunchy-pgdump
-    crunchy-pgbench
-    crunchy-collect
-    crunchy-pgbadger
-    crunchy-grafana
+    crucnhy-pgbackrest
+    crunchy-pgbackrest-repo
     crunchy-pgadmin4
-    crunchy-pgrestore
-    crunchy-postgres-gis
-    crunchy-prometheus
+    crunchy-pgbadger
+    crunchy-pgbouncer
+    crunchy-pgpool
+    crunchy-postgres
     crunchy-upgrade
-    crunchy-backrest-restore
     crunchy-postgres-ha
-    crunchy-postgres-gis-ha
     crunchy-admin
+)
+
+GIS_IMAGES=(
+    crunchy-postgres-gis
+    crunchy-postgres-gis-ha
 )
 
 function echo_green() {
@@ -36,6 +34,13 @@ do
     echo_green "=> Pushing ${REGISTRY?}/$CCP_IMAGE_PREFIX/${image?}:${VERSION?}.."
     docker tag $CCP_IMAGE_PREFIX/${image?}:${VERSION?} ${REGISTRY?}/$CCP_IMAGE_PREFIX/${image?}:${VERSION?}
     docker push ${REGISTRY?}/$CCP_IMAGE_PREFIX/${image?}:${VERSION?}
+done
+
+for gis_image in "${IMAGES[@]}"
+do
+    echo_green "=> Pushing ${REGISTRY?}/$CCP_IMAGE_PREFIX/${gis_image?}:${GIS_VERSION?}.."
+    docker tag $CCP_IMAGE_PREFIX/${image?}:${GIS_VERSION?} ${REGISTRY?}/$CCP_IMAGE_PREFIX/${gis_image?}:${GIS_VERSION?}
+    docker push ${REGISTRY?}/$CCP_IMAGE_PREFIX/${gis_image?}:${GIS_VERSION?}
 done
 
 echo_green "=> Done!"

@@ -71,7 +71,7 @@ Make directories to hold the GitHub clone that also work with the Go workspace s
     $ cd $HOME/cdev/src/github.com/crunchydata
     $ git clone https://github.com/crunchydata/crunchy-containers
     $ cd crunchy-containers
-    $ git checkout v4.3.2
+    $ git checkout v4.5.1
 
 # Your Shell Environment
 
@@ -91,10 +91,12 @@ line starting with #:
     export PATH=$PATH:$GOBIN        # add Go bin path to your overall path
     export CCP_BASEOS=centos7       # centos7 for Centos, ubi7 for Red Hat Universal Base Image
     export CCP_PGVERSION=12         # The PostgreSQL major version
-    export CCP_PG_FULLVERSION=12.3
-    export CCP_VERSION=4.3.2
+    export CCP_PG_FULLVERSION=12.5
+    export CCP_POSTGIS_VERSION=3.0  # The PostGIS version
+    export CCP_VERSION=4.5.1
     export CCP_IMAGE_PREFIX=crunchydata # Prefix to put before all the container image names
     export CCP_IMAGE_TAG=$CCP_BASEOS-$CCP_PG_FULLVERSION-$CCP_VERSION   # Used to tag the images
+    export CCP_POSTGIS_IMAGE_TAG=$CCP_BASEOS-$CCP_PG_FULLVERSION-$CCP_POSTGIS_VERSION-$CCP_VERSION # Used to tag images that include PostGIS
     export CCPROOT=$GOPATH/src/github.com/crunchydata/crunchy-containers    # The base of the clone github repo
     export CCP_SECURITY_CONTEXT=""
     export CCP_CLI=kubectl          # kubectl for K8s, oc for OpenShift
@@ -165,48 +167,11 @@ either building the containers or installing the containers into Kubernetes.
 
 {{% / notice %}}
 
-These installation instructions
-assume the installation of PostgreSQL 10 through the official Postgresql Development Group (PGDG) repository.
-View the documentation located [here](https://wiki.postgresql.org/wiki/YUM_Installation) in
-order to view more detailed notes or install a different version of PostgreSQL.
+There are a variety of ways you can [download PostgreSQL](https://www.crunchydata.com/developers/download-postgres).
 
-Locate and edit your distribution’s `.repo` file, located:
+For specific installation instructions for [installing PostgreSQL 12 on CentOS](https://www.crunchydata.com/developers/download-postgres/binaries/postgresql12), please visit the [Crunchy Data Developer Portal](https://www.crunchydata.com/developers):
 
-  - On **CentOS**: /etc/yum.repos.d/CentOS-Base.repo, \[base\] and \[updates\] sections
-
-  - On **RHEL**: /etc/yum/pluginconf.d/rhnplugin.conf \[main\] section
-
-To the section(s) identified above, depending on OS being used, you need to append a line to prevent dependencies
-from getting resolved to the PostgreSQL supplied by the base repository:
-
-- On **CentOS** and **RHEL**:
-
-    exclude=postgresql*
-
-Next, install the RPM relating to the base operating system and PostgreSQL version
-you wish to install. The RPMs can be found [here](https://yum.postgresql.org/repopackages.php).
-Below we chose Postgresql 10 for the example (change if you need different version):
-
-On **CentOS** system:
-
-    sudo yum -y install https://download.postgresql.org/pub/repos/yum/10/redhat/rhel-7-x86_64/pgdg-centos10-10-2.noarch.rpm
-
-On  **RHEL** system:
-
-    sudo yum -y install https://download.postgresql.org/pub/repos/yum/testing/10/redhat/rhel-7-x86_64/pgdg-redhat10-10-2.noarch.rpm
-
-Update the system:
-
-    sudo yum -y update
-
-Install the PostgreSQL server package.
-
-    sudo yum -y install postgresql10-server.x86_64
-
-Update the system:
-
-    sudo yum -y update
-
+[https://www.crunchydata.com/developers/download-postgres/binaries/postgresql12](https://www.crunchydata.com/developers/download-postgres/binaries/postgresql12)
 
 ## Configuring Storage for Kubernetes Based Systems
 

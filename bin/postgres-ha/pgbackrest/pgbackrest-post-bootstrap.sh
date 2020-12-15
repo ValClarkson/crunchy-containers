@@ -1,12 +1,13 @@
 #!/bin/bash
 
-source /opt/cpm/bin/common/common_lib.sh
+CRUNCHY_DIR=${CRUNCHY_DIR:-'/opt/crunchy'}
+source "${CRUNCHY_DIR}/bin/common_lib.sh"
 
 # Create default pgbackrest directories if they don't already exist
 create_pgbackrest_dirs() {
 
     # only create repo dir if using local storage (not if using a central repo or 's3')
-    if [[ ! -v PGBACKREST_REPO1_HOST && "${PGBACKREST_REPO_TYPE}" != "s3" ]]
+    if [[ ! -v PGBACKREST_REPO1_HOST && "${PGBACKREST_REPO1_TYPE}" != "s3" ]]
     then
         if [[ -v PGBACKREST_REPO_PATH ]]
         then
@@ -74,7 +75,7 @@ create_initial_backup() {
 }
 
 # First load pgBackRest env vars set during pre-bootstrap
-source /opt/cpm/bin/pgbackrest/pgbackrest-set-env.sh
+source "${CRUNCHY_DIR}/bin/postgres-ha/pgbackrest/pgbackrest-set-env.sh"
 
 create_pgbackrest_dirs
 

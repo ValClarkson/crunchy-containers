@@ -23,15 +23,26 @@
 # This accepts one argument, the value of "%p" that is used as part of the
 # PostgreSQL archiving process. This is referenced as $1
 
+CRUNCHY_DIR=${CRUNCHY_DIR:-'/opt/crunchy'}
 # Load the pgBackRest environmental variables
-source /opt/cpm/bin/pgbackrest/pgbackrest-set-env.sh
+source "${CRUNCHY_DIR}/bin/postgres-ha/pgbackrest/pgbackrest-set-env.sh"
 
 # first try local
 pgbackrest archive-push $1
 local_exit=$?
 
+# set the repo type flag
+archive_push_cmd_args=("--repo1-type=s3")
+
+# if TLS verification is disabled, pass in the appropriate flag
+# otherwise, leave the default behavior and verify TLS
+if [[ $PGHA_PGBACKREST_S3_VERIFY_TLS == "false" ]]
+then
+    archive_push_cmd_args+=("--no-repo1-s3-verify-tls")
+fi
+
 # then try S3
-pgbackrest archive-push --repo-type=s3 $1
+pgbackrest archive-push ${archive_push_cmd_args[*]} $1
 s3_exit=$?
 
 # check each exit code. If one of them fail, exit with their nonzero exit code
