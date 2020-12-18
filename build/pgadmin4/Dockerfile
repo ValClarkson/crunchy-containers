@@ -2,13 +2,15 @@ ARG BASEOS
 ARG BASEVER
 ARG PG_FULL
 ARG PREFIX
-FROM ${PREFIX}/crunchy-pg-base:${BASEOS}-${PG_FULL}-${BASEVER}
+FROM ${PREFIX}/crunchy-base:${BASEOS}-${PG_FULL}-${BASEVER}
 
 # For RHEL8 all arguments used in main code has to be specified after FROM
 ARG BASEOS
-ARG DFSET
 ARG PACKAGER
 ARG PG_MAJOR
+
+# Needed due to lack of environment substitution trick on ADD
+ARG PG_LBL
 
 LABEL name="pgadmin4" \
 	summary="pgAdmin4 GUI utility" \
@@ -17,7 +19,7 @@ LABEL name="pgadmin4" \
 	io.k8s.display-name="pgAdmin 4" \
 	io.openshift.tags="postgresql,postgres,monitoring,pgadmin4,pgadmin,database,crunchy"
 
-RUN mkdir -p /opt/cpm/bin /opt/cpm/conf /var/lib/pgadmin /var/log/pgadmin \
+RUN mkdir -p /opt/crunchy/bin /opt/crunchy/conf /var/lib/pgadmin /var/log/pgadmin \
         /certs /run/httpd
 
 RUN if [ "$BASEOS" = "centos7" ] ; then \
@@ -99,11 +101,11 @@ fi
 # Preserving PGVERSION out of paranoia
 ENV PGROOT="/usr/pgsql-${PG_MAJOR}" PGVERSION="${PG_MAJOR}"
 
-ADD bin/pgadmin4/ /opt/cpm/bin
-ADD bin/common /opt/cpm/bin
-ADD conf/pgadmin4/ /opt/cpm/conf
+ADD bin/pgadmin4/ /opt/crunchy/bin
+ADD bin/common /opt/crunchy/bin
+ADD conf/pgadmin4/ /opt/crunchy/conf
 
-RUN cp /opt/cpm/conf/httpd.conf /etc/httpd/conf/httpd.conf \
+RUN cp /opt/crunchy/conf/httpd.conf /etc/httpd/conf/httpd.conf \
 	&& rm /etc/httpd/conf.d/welcome.conf /etc/httpd/conf.d/ssl.conf
 
 EXPOSE 5050
@@ -114,8 +116,8 @@ RUN chmod g=u /etc/passwd
 # volume permissions are applied when building the image
 VOLUME ["/var/lib/pgadmin", "/certs", "/run/httpd"]
 
-ENTRYPOINT ["opt/cpm/bin/uid_daemon.sh"]
+ENTRYPOINT ["opt/crunchy/bin/uid_daemon.sh"]
 
 USER 2
 
-CMD ["/opt/cpm/bin/start-pgadmin4.sh"]
+CMD ["/opt/crunchy/bin/start-pgadmin4.sh"]

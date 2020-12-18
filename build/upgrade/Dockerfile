@@ -2,9 +2,10 @@ ARG BASEOS
 ARG BASEVER
 ARG PG_FULL
 ARG PREFIX
-FROM ${PREFIX}/crunchy-pg-base:${BASEOS}-${PG_FULL}-${BASEVER}
+FROM ${PREFIX}/crunchy-base:${BASEOS}-${PG_FULL}-${BASEVER}
 
 # For RHEL8 all arguments used in main code has to be specified after FROM
+ARG BASEOS
 ARG DFSET
 ARG PACKAGER
 ARG PG_MAJOR
@@ -29,6 +30,7 @@ RUN ${PACKAGER} -y install \
 	"postgresql${PG_MAJOR//.}-contrib" \
 	"postgresql${PG_MAJOR//.}-server" \
 	"pgaudit${PG_MAJOR//.}*" \
+	"pgnodemx${PG_MAJOR//.}" \
 	unzip \
 	&& ${PACKAGER} -y clean all
 
@@ -42,15 +44,16 @@ RUN ${PACKAGER} -y install \
 	postgresql[1-9][0-9]-contrib \
 	postgresql[1-9][0-9]-server \
 	pgaudit[1-9][0-9] \
+	pgnodemx[1-9][0-9] \
 	&& ${PACKAGER} -y clean all
 
-RUN mkdir -p /opt/cpm/bin /pgolddata /pgnewdata /opt/cpm/conf
-ADD bin/upgrade/ /opt/cpm/bin
-ADD bin/common /opt/cpm/bin
-ADD conf/upgrade/ /opt/cpm/conf
+RUN mkdir -p /opt/crunchy/bin /pgolddata /pgnewdata /opt/crunchy/conf
+ADD bin/upgrade/ /opt/crunchy/bin
+ADD bin/common /opt/crunchy/bin
+ADD conf/upgrade/ /opt/crunchy/conf
 
-RUN chown -R postgres:postgres /opt/cpm /pgolddata /pgnewdata && \
-	chmod -R g=u /opt/cpm /pgolddata /pgnewdata
+RUN chown -R postgres:postgres /opt/crunchy /pgolddata /pgnewdata && \
+	chmod -R g=u /opt/crunchy /pgolddata /pgnewdata
 
 RUN chmod g=u /etc/passwd && \
 	chmod g=u /etc/group
@@ -59,8 +62,8 @@ RUN chmod g=u /etc/passwd && \
 # volume permissions are applied when building the image
 VOLUME /pgolddata /pgnewdata
 
-ENTRYPOINT ["opt/cpm/bin/uid_postgres.sh"]
+ENTRYPOINT ["opt/crunchy/bin/uid_postgres.sh"]
 
 USER 26
 
-CMD ["/opt/cpm/bin/start.sh"]
+CMD ["/opt/crunchy/bin/start.sh"]
